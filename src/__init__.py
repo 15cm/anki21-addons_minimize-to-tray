@@ -2,24 +2,31 @@
 # Copyright: Simone Gaiarin <simgunz@gmail.com>
 # License: GNU GPL, version 3 or later; http://www.gnu.org/copyleft/gpl.html
 # Name: Minimize to Tray 2
-# Version: 0.2
+# Version: 1.3
 # Description: Minimize anki to tray when the X button is pressed (Anki 2 version)
 # Homepage: https://github.com/simgunz/anki-plugins
 # Report any problem in the github issues section
 
+import os
+import socket
+import threading
+import time
 from types import MethodType
-
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIcon, QPixmap
-from PyQt5.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from anki import hooks
 from aqt import mw  # mw is the INSTANCE of the main window
 from aqt.main import AnkiQt
+from PyQt5.QtCore import QObject, Qt, pyqtSignal
+from PyQt5.QtGui import QIcon, QPixmap
+from PyQt5.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 
-class AnkiSystemTray:
+class AnkiSystemTray(QObject):
+    sock_path = '/tmp/anki_tray.sock'
+    show_signal = pyqtSignal()
+
     def __init__(self, mw):
+        super().__init__()
         """Create a system tray with the Anki icon."""
         self.mw = mw
         self.isAnkiFocused = True
@@ -32,6 +39,34 @@ class AnkiSystemTray:
         config = self.mw.addonManager.getConfig(__name__)
         if config["hide_on_startup"]:
             self.hideAll()
+
+        self.show_signal.connect(self.showAll)
+        self._init_sock()
+
+    def _init_sock(self):
+        try:
+            os.unlink(self.sock_path)
+        except OSError:
+            if os.path.exists(self.sock_path):
+                raise
+
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.bind(self.sock_path)
+        self.sock.listen(1)
+        self.running = True
+        self.thread = threading.Thread(target = self.listen, args=[]).start()
+
+    def listen(self):
+        try:
+            while self.running:
+                conn, addr = self.sock.accept()
+                try:
+                    self.show_signal.emit()
+                    time.sleep(1)
+                finally:
+                    conn.close()
+        except:
+            pass
 
     def onActivated(self, reason):
         """Show/hide all Anki windows when the tray icon is clicked."""
@@ -55,6 +90,11 @@ class AnkiSystemTray:
     def onExit(self):
         self.mw.closeEventFromAction = True
         self.mw.close()
+        self.running = False
+        self.sock.shutdown(socket.SHUT_RDWR)
+        if self.thread:
+            self.thread.join()
+
 
     def showAll(self):
         """Show all windows."""
